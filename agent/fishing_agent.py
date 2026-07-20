@@ -559,13 +559,17 @@ class FishingBot:
     def sell_all_fish(self):
         print("\n==================================================")
         print("🐟💰 开始卖鱼...")
-        
+
         # Use pipeline to execute sell sequence
-        self.context.run_task("SellFish_Start")
-        
-        self.total_sell_count += 1
-        self.fish_since_last_sell = 0
-        print(f"✅ 卖鱼完成 (第 {self.total_sell_count} 次)")
+        detail = self.context.run_task("SellFish_Start")
+
+        if detail and detail.nodes:
+            self.total_sell_count += 1
+            self.fish_since_last_sell = 0
+            print(f"✅ 卖鱼完成 (第 {self.total_sell_count} 次)")
+        else:
+            # 入口未识别到(如卖鱼图标未出现),不清计数,下一条鱼后自动重试
+            print("⚠️ 卖鱼失败:未能进入卖鱼界面,下一条鱼后重试")
         print("==================================================\n")
         self.delay(1.0)
 
