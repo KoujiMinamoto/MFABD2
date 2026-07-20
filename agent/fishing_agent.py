@@ -556,14 +556,29 @@ class FishingBot:
         
         return False
 
-    def wait_sell_entry(self, max_wait: float = 90.0) -> bool:
-        """静置等待「钓鱼模式」衰减、顶栏钱袋图标出现。
+    def _tap_center_to_dismiss(self, times: int = 3):
+        """点击屏幕中央若干次,退出钓鱼态/关闭结算弹窗回到初始态。
 
-        结算后游戏仍处于钓鱼模式,钱袋图标隐藏;只要不触摸钓鱼相关按钮,
-        一段时间后会自动回到空闲态。期间只截图识别,绝不触摸。
+        中央 (640,360) 在钓鱼各界面都是安全位置(海面/关闭提示),不会
+        误触抛竿或方向键。
         """
-        print(f"  🧘 静置等待卖鱼入口出现(最多 {max_wait:.0f}s,期间不触摸)...")
+        for _ in range(times):
+            if not (self.running and not self.context.tasker.stopping):
+                return
+            self.tap(*self.coords.screen_center)
+            self.delay(0.5)
+
+    def wait_sell_entry(self, max_wait: float = 90.0) -> bool:
+        """退回初始态并等待顶栏钱袋图标出现。
+
+        结算后游戏仍处于钓鱼模式,钱袋图标隐藏。需先点击屏幕中央数次退回
+        初始态,随后钓鱼模式衰减、钱袋出现。等待期间每隔一段再补点中央
+        (以防叠层弹窗需多次关闭),但绝不触摸抛竿按钮。
+        """
+        print(f"  🧘 退回初始态并等待卖鱼入口出现(最多 {max_wait:.0f}s)...")
         t0 = time.time()
+        self._tap_center_to_dismiss(3)
+        last_dismiss = time.time()
         while self.running and not self.context.tasker.stopping:
             shot = self.get_screenshot()
             if shot is not None:
@@ -574,6 +589,10 @@ class FishingBot:
             if time.time() - t0 > max_wait:
                 print(f"    ⏳ {max_wait:.0f}s 内未见卖鱼入口,放弃本次卖鱼")
                 return False
+            # 每 ~8s 再补点中央,清掉可能残留的弹窗
+            if time.time() - last_dismiss > 8.0:
+                self._tap_center_to_dismiss(2)
+                last_dismiss = time.time()
             self.delay(2.0)
         return False
 
