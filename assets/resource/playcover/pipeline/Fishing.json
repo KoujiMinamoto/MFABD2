@@ -1,6 +1,6 @@
 {
     "Casting_Rod": {
-        "desc": "PlayCover(iOS)适配:抛竿改为按住蓄力、蓄力环变绿瞬间松手(Perfect Cast),由 agent 的 HoldCastGreen 自定义动作执行;base(安卓)资源保持原直接按压行为。",
+        "doc": "PlayCover(iOS)适配:抛竿改为按住蓄力、蓄力环变绿瞬间松手(Perfect Cast),由 agent 的 HoldCastGreen 自定义动作执行;base(安卓)资源保持原直接按压行为。",
         "action": "Custom",
         "custom_action": "HoldCastGreen",
         "rate_limit": 800,
@@ -12,7 +12,7 @@
         ]
     },
     "Fishing_Start": {
-        "desc": "PlayCover(iOS)适配:iOS端下竿钓鱼过程中顶栏钱袋图标(Sell_ico)会隐藏,原节点在该状态下会卡死。改为识别抛竿按钮入场(实测匹配分0.98);钱袋可见时先清包出售,不可见则直接开钓。",
+        "doc": "PlayCover(iOS)适配:iOS端下竿钓鱼过程中顶栏钱袋图标(Sell_ico)会隐藏,原节点在该状态下会卡死。改为识别抛竿按钮入场(实测匹配分0.98);钱袋可见时先清包出售,不可见则直接开钓。",
         "recognition": "TemplateMatch",
         "roi": [
             1057,
@@ -32,7 +32,7 @@
         "focus": "FM.[PlayCover] 检测到抛竿按钮,先尝试卖鱼(钱袋可见时),随后开钓"
     },
     "SellFish_Start": {
-        "desc": "PlayCover(iOS)适配:安卓版 Sell_ico 模板为深蓝实底,iOS 端钱袋图标是半透明浅底,原模板匹配分仅 ~0.48 永远不命中。改用从 iOS 实机截图制作的绿幕掩码模板(昼/夜两版,任一命中)。",
+        "doc": "PlayCover(iOS)适配:安卓版 Sell_ico 模板为深蓝实底,iOS 端钱袋图标是半透明浅底,原模板匹配分仅 ~0.48 永远不命中。改用从 iOS 实机截图制作的绿幕掩码模板(昼/夜两版,任一命中)。",
         "recognition": "TemplateMatch",
         "roi": [
             802,
@@ -57,7 +57,7 @@
         ]
     },
     "SellFish_Shop": {
-        "desc": "PlayCover(iOS)适配:iOS端点击钱袋打开的页面标题可能是「钓鱼包」而非「商店」,两者都接受。其余卖鱼流程(一键出售/全选/出售/确认/返回)与安卓一致。",
+        "doc": "PlayCover(iOS)适配:iOS端点击钱袋打开的页面标题可能是「钓鱼包」而非「商店」,两者都接受。其余卖鱼流程(一键出售/全选/出售/确认/返回)与安卓一致。",
         "recognition": "OCR",
         "roi": [
             194,

@@ -428,7 +428,8 @@ class FishingBot:
         total_time = 17  # 默认总时间，后续从识别结果更新
         seen_valid = False   # 是否已经见过有效的进度条
         dumped_debug = False  # 是否已保存过调试帧
-        
+        invalid_streak = 0    # 见过进度条后,连续无效帧计数(抗单帧抖动)
+
 
         while self.running and not self.context.tasker.stopping:
             current_time = time.time()
@@ -449,7 +450,13 @@ class FishingBot:
             bar_info = self.analyze_progress_bar(screenshot)
             if not bar_info["valid"]:
                 if seen_valid:
-                    return True  # 进度条消失,小游戏结束(可能已经钓到)
+                    # 已见过进度条后转为无效:可能真结束,也可能只是单帧抖动;
+                    # 连续 3 帧无效才判定小游戏结束,避免偶发漏检提前收手
+                    invalid_streak += 1
+                    if invalid_streak >= 3:
+                        return True  # 进度条持续消失,小游戏结束(可能已经钓到)
+                    self.delay(0.05)
+                    continue
                 # 开局阶段:进度条可能尚未渲染,等待其出现(此前分析链路慢,
                 # 无意中起到了等待作用;提速后必须显式等待)
                 if not dumped_debug:
@@ -469,6 +476,7 @@ class FishingBot:
                 print("  ⚠️ 4秒内未检测到进度条,视为本轮失败")
                 return False
             seen_valid = True
+            invalid_streak = 0  # 检测到有效帧,重置无效计数
             
             cursor_x = bar_info["cursor_x"]
             yellow_regions = bar_info["yellow_regions"]
@@ -737,19 +745,29 @@ class HoldCastGreenAction(CustomAction):
     def run(self, context: Context, argv: CustomAction.RunArg) -> bool:
         bot = FishingBot(context=context)
         bot.running = True
-        # 结算转场未结束时按压可能不被游戏接收(表现为全程 0 绿像素),
-        # 此时线并未抛出,重试按压是安全的;若已蓄力(绿像素>0)则不重试
-        for attempt in range(3):
-            if bot.hold_cast_until_green():
-                return True
-            if bot.last_hold_best_green > 0:
-                return True  # 蓄力发生过,线已抛出(只是未达绿色阈值),不可重按
-            if attempt < 2:
-                print(f"    🔁 按压似乎未被游戏接收,1s 后重试(第 {attempt + 2} 次)")
-                bot.delay(1.0)
-        # 三次按压均无响应:最常见原因是鱼包已满、抛竿被禁用。
-        # 尝试卖鱼自救(sell_all_fish 会先静置等待钱袋出现),随后再抛一次
-        print("    🆘 按压持续无响应,疑似鱼包已满,尝试卖鱼自救...")
-        bot.sell_all_fish()
-        bot.hold_cast_until_green()
-        return True
+        # 顶层兜底:截图/识别/控制器接口异常不应逸出到框架核心导致 Agent 崩溃;
+        # 捕获后释放可能残留的触摸并返回 True,让管线按正常流程继续(下一轮会重抛)
+        try:
+            # 结算转场未结束时按压可能不被游戏接收(表现为全程 0 绿像素),
+            # 此时线并未抛出,重试按压是安全的;若已蓄力(绿像素>0)则不重试
+            for attempt in range(3):
+                if bot.hold_cast_until_green():
+                    return True
+                if bot.last_hold_best_green > 0:
+                    return True  # 蓄力发生过,线已抛出(只是未达绿色阈值),不可重按
+                if attempt < 2:
+                    print(f"    🔁 按压似乎未被游戏接收,1s 后重试(第 {attempt + 2} 次)")
+                    bot.delay(1.0)
+            # 三次按压均无响应:最常见原因是鱼包已满、抛竿被禁用。
+            # 尝试卖鱼自救(sell_all_fish 会先静置等待钱袋出现),随后再抛一次
+            print("    🆘 按压持续无响应,疑似鱼包已满,尝试卖鱼自救...")
+            bot.sell_all_fish()
+            bot.hold_cast_until_green()
+            return True
+        except Exception as e:
+            print(f"    ❌ HoldCastGreen 执行异常: {e}")
+            try:
+                bot.controller.post_touch_up().wait()
+            except Exception:
+                pass
+            return True
