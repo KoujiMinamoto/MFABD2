@@ -1,0 +1,21 @@
+{
+    "Fishing_Start": {
+        "desc": "PlayCover(iOS)适配:iOS端钓鱼顶栏没有卖鱼钱袋图标(Sell_ico),原节点会卡死。改为识别抛竿按钮(与Fishing_Already_Setsail相同,实测匹配分0.98),跳过初次卖鱼直接进钓鱼循环。鱼包满了请手动卖鱼。",
+        "recognition": "TemplateMatch",
+        "roi": [
+            1057,
+            483,
+            162,
+            175
+        ],
+        "template": [
+            "Fishhook.png"
+        ],
+        "green_mask": true,
+        "post_wait_freezes": 800,
+        "next": [
+            "Custom_Fishing_Task"
+        ],
+        "focus": "FM.[PlayCover] 检测到抛竿按钮,直接开钓(跳过自动卖鱼)"
+    }
+}
