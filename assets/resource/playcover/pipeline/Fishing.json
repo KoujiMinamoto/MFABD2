@@ -1,6 +1,18 @@
 {
+    "Casting_Rod": {
+        "desc": "PlayCover(iOS)适配:抛竿改为按住蓄力、蓄力环变绿瞬间松手(Perfect Cast),由 agent 的 HoldCastGreen 自定义动作执行;base(安卓)资源保持原直接按压行为。",
+        "action": "Custom",
+        "custom_action": "HoldCastGreen",
+        "rate_limit": 800,
+        "next": [
+            "Detect_Took_Bait"
+        ],
+        "on_error": [
+            "Move_Forward"
+        ]
+    },
     "Fishing_Start": {
-        "desc": "PlayCover(iOS)适配:iOS端钓鱼顶栏没有卖鱼钱袋图标(Sell_ico),原节点会卡死。改为识别抛竿按钮(与Fishing_Already_Setsail相同,实测匹配分0.98),跳过初次卖鱼直接进钓鱼循环。鱼包满了请手动卖鱼。",
+        "desc": "PlayCover(iOS)适配:iOS端下竿钓鱼过程中顶栏钱袋图标(Sell_ico)会隐藏,原节点在该状态下会卡死。改为识别抛竿按钮入场(实测匹配分0.98);钱袋可见时先清包出售,不可见则直接开钓。",
         "recognition": "TemplateMatch",
         "roi": [
             1057,
@@ -14,8 +26,27 @@
         "green_mask": true,
         "post_wait_freezes": 800,
         "next": [
+            "[JumpBack]SellFish_Start",
             "Custom_Fishing_Task"
         ],
-        "focus": "FM.[PlayCover] 检测到抛竿按钮,直接开钓(跳过自动卖鱼)"
+        "focus": "FM.[PlayCover] 检测到抛竿按钮,先尝试卖鱼(钱袋可见时),随后开钓"
+    },
+    "SellFish_Shop": {
+        "desc": "PlayCover(iOS)适配:iOS端点击钱袋打开的页面标题可能是「钓鱼包」而非「商店」,两者都接受。其余卖鱼流程(一键出售/全选/出售/确认/返回)与安卓一致。",
+        "recognition": "OCR",
+        "roi": [
+            194,
+            12,
+            113,
+            66
+        ],
+        "expected": [
+            "商店",
+            "钓鱼包"
+        ],
+        "next": [
+            "SellFish_Step2_NoFish",
+            "SellFish_SellModOn"
+        ]
     }
 }

@@ -18,6 +18,8 @@ from __future__ import annotations
 import os
 import time
 from dataclasses import dataclass
+
+import numpy as np
 from typing import Any, List, Optional, Tuple
 
 from maa.agent.agent_server import AgentServer
@@ -105,49 +107,76 @@ class FishingBot:
         print("Detect_Took_Bait result:", reco_result)
         return reco_result.hit
 
+    # 进度条 ROI,与 pipeline Detect_Progress_* 节点一致 (x, y, w, h)
+    BAR_ROI = (480, 602, 383, 20)
+
+    @staticmethod
+    def _bgr_to_hsv(bgr):
+        """向量化 BGR→HSV(OpenCV 约定:H 0-180, S/V 0-255)。"""
+        b = bgr[..., 0].astype(np.float32)
+        g = bgr[..., 1].astype(np.float32)
+        r = bgr[..., 2].astype(np.float32)
+        v = np.maximum(np.maximum(b, g), r)
+        mn = np.minimum(np.minimum(b, g), r)
+        diff = v - mn
+        s = np.where(v > 0, diff * 255.0 / np.maximum(v, 1.0), 0.0)
+        h = np.zeros_like(v)
+        m = diff > 0
+        safe = np.maximum(diff, 1.0)
+        rm = m & (v == r)
+        gm = m & (v == g) & ~rm
+        bm = m & (v == b) & ~rm & ~gm
+        h[rm] = 60.0 * (g[rm] - b[rm]) / safe[rm]
+        h[gm] = 120.0 + 60.0 * (b[gm] - r[gm]) / safe[gm]
+        h[bm] = 240.0 + 60.0 * (r[bm] - g[bm]) / safe[bm]
+        h = np.where(h < 0, h + 360.0, h) / 2.0
+        return h, s, v
+
+    @staticmethod
+    def _mask_runs(mask, min_pixels, x0):
+        """把列投影切成连续区段,返回 [(abs_start, abs_end), ...],过滤总像素不足的段。"""
+        active = mask.any(axis=0)
+        runs = []
+        start = None
+        for i, a in enumerate(active):
+            if a and start is None:
+                start = i
+            elif not a and start is not None:
+                if int(mask[:, start:i].sum()) >= min_pixels:
+                    runs.append((start + x0, i + x0))
+                start = None
+        if start is not None and int(mask[:, start:].sum()) >= min_pixels:
+            runs.append((start + x0, mask.shape[1] + x0))
+        return runs
+
     def analyze_progress_bar(self, screenshot: Any):
-        """Analyze progress bar using ColorMatch recognitions.
-        
-        Uses ColorMatch to detect:
-        - White cursor position
-        - Blue zones
-        - Yellow zones
+        """本地 numpy 分析进度条(白游标/蓝区/黄区)。
+
+        原实现每帧走 3 次 run_recognition RPC,在 PlayCover 等截图链路较慢
+        的环境下单轮延迟可达 0.7s+,而游标 ~250px/s,预测必然过期。本地
+        计算沿用 pipeline Detect_Progress_* 节点相同的 HSV 阈值,耗时 <10ms。
         """
         result = {"cursor_x": None, "blue_regions": [], "yellow_regions": [], "valid": False}
-        
-        # Detect white cursor
-        cursor_result = self.context.run_recognition("Detect_Progress_White_Cursor", screenshot)
-        if cursor_result.hit:
-            # Calculate cursor x from bounding box center of best match
-            box = cursor_result.best_result.box
-            cursor_x = box[0] + box[2] // 2
-            result["cursor_x"] = cursor_x
-        
-        # Detect blue zones - get all detected regions
-        blue_result = self.context.run_recognition("Detect_Progress_Blue_Zones", screenshot)
-        if blue_result.hit:
-            # Extract regions from all matches
-            blue_regions = []
-            for match in blue_result.all_results:
-                box = match.box
-                start_x = box[0]
-                end_x = box[0] + box[2]
-                blue_regions.append((start_x, end_x))
-            result["blue_regions"] = blue_regions
-        
-        # Detect yellow zones - get all detected regions
-        yellow_result = self.context.run_recognition("Detect_Progress_Yellow_Zones", screenshot)
-        if yellow_result.hit:
-            # Extract regions from all matches
-            yellow_regions = []
-            for match in yellow_result.all_results:
-                box = match.box
-                start_x = box[0]
-                end_x = box[0] + box[2]
-                yellow_regions.append((start_x, end_x))
-            result["yellow_regions"] = yellow_regions
-        
-        # Validate result
+        x0, y0, w, h = self.BAR_ROI
+        img = np.asarray(screenshot)
+        if img.ndim != 3 or img.shape[0] < y0 + h or img.shape[1] < x0 + w:
+            print("Progress bar analysis: 截图尺寸异常", getattr(img, "shape", None))
+            return result
+        bar = img[y0:y0 + h, x0:x0 + w, :3]
+        H, S, V = self._bgr_to_hsv(bar)
+
+        # 阈值与 pipeline 节点一致:白游标 S<=30,V>=240;蓝 H95-115;黄 H15-35
+        white = (S <= 30) & (V >= 240)
+        blue = (H >= 95) & (H <= 115) & (S >= 130) & (V >= 250)
+        yellow = (H >= 15) & (H <= 35) & (S >= 40) & (V >= 250)
+
+        white_runs = self._mask_runs(white, 15, x0)
+        if white_runs:
+            best = max(white_runs, key=lambda r: int(white[:, r[0] - x0:r[1] - x0].sum()))
+            result["cursor_x"] = (best[0] + best[1]) // 2
+        result["blue_regions"] = self._mask_runs(blue, 10, x0)
+        result["yellow_regions"] = self._mask_runs(yellow, 10, x0)
+
         result["valid"] = result["cursor_x"] is not None and (
             len(result["blue_regions"]) > 0 or len(result["yellow_regions"]) > 0
         )
@@ -308,6 +337,65 @@ class FishingBot:
         return time_needed
 
     # ============ Game flow ============
+    # 抛竿蓄力环几何:按钮盒 [1057,483,162,175] → 圆心/半径按 1080p 实测
+    CAST_RING_CENTER = (1138, 570)
+    CAST_RING_R = (66, 94)
+
+    def hold_cast_until_green(self, max_hold: float = 5.0) -> bool:
+        """按住抛竿按钮蓄力,蓄力环变绿的瞬间松手(Perfect Cast)。
+
+        绿色只在按住蓄力期间出现(空闲时环上只有白色弧,已用调试帧确认),
+        所以必须 touch_down 持续按住、边按边检测、见绿 touch_up。
+        超时也松手(等效普通抛竿,不会更差)。
+        """
+        print("  按住抛竿蓄力,等待变绿...")
+        cx, cy = self.CAST_RING_CENTER
+        r_in, r_out = self.CAST_RING_R
+        x0, y0 = cx - r_out, cy - r_out
+        size = r_out * 2
+        yy, xx = np.mgrid[0:size, 0:size]
+        rr2 = (xx - r_out) ** 2 + (yy - r_out) ** 2
+        annulus = (rr2 >= r_in * r_in) & (rr2 <= r_out * r_out)
+
+        self.controller.post_touch_down(*self.coords.cast_rod).wait()
+        t0 = time.time()
+        best_seen = 0
+        released_green = False
+        try:
+            while self.running and not self.context.tasker.stopping:
+                shot = self.get_screenshot()
+                if shot is None:
+                    continue
+                img = np.asarray(shot)
+                patch = img[y0:y0 + size, x0:x0 + size, :3]
+                if patch.shape[0] != size or patch.shape[1] != size:
+                    print("    ⚠️ 截图尺寸异常,直接松手")
+                    break
+                H, S, V = self._bgr_to_hsv(patch)
+                green = (H >= 35) & (H <= 85) & (S >= 80) & (V >= 100) & annulus
+                n = int(green.sum())
+                best_seen = max(best_seen, n)
+                if n >= 40:
+                    released_green = True
+                    break
+                if time.time() - t0 > max_hold:
+                    try:
+                        from PIL import Image
+                        dbg = os.path.join(
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "debug", "fishing_cast_debug.png")
+                        Image.fromarray(img[..., :3][..., ::-1]).save(dbg)
+                        print(f"    🐞 已保存蓄力中调试帧: {dbg}")
+                    except Exception as e:
+                        print("    🐞 调试帧保存失败:", e)
+                    print(f"    ⏳ 蓄力 {max_hold}s 未见变绿(峰值绿像素 {best_seen}),直接松手")
+                    break
+        finally:
+            self.controller.post_touch_up().wait()
+        if released_green:
+            print(f"    🟢 蓄力环变绿(绿像素 {n},耗时 {time.time()-t0:.2f}s),松手抛竿!")
+        return released_green
+
     def wait_for_fish(self) -> Tuple[bool, bool]:
         print("  等待鱼上钩...")
         start_time = time.time()
@@ -336,13 +424,16 @@ class FishingBot:
         start_time = time.time()
         click_count = 0
         total_time = 17  # 默认总时间，后续从识别结果更新
+        seen_valid = False   # 是否已经见过有效的进度条
+        dumped_debug = False  # 是否已保存过调试帧
         
 
         while self.running and not self.context.tasker.stopping:
             current_time = time.time()
             frame = int((current_time - start_time) * 60)
-            
+
             screenshot = self.get_screenshot()
+            cap_cost = time.time() - current_time
             # if total_time is None:
             #     result = self.context.run_recognition("Reco_Minigame_Total_Time", screenshot)
             #     total_time = int(result.best_result.text)
@@ -355,7 +446,27 @@ class FishingBot:
             # 分析进度条
             bar_info = self.analyze_progress_bar(screenshot)
             if not bar_info["valid"]:
-                return True  # 分析失败，结束小游戏(可能已经钓到)
+                if seen_valid:
+                    return True  # 进度条消失,小游戏结束(可能已经钓到)
+                # 开局阶段:进度条可能尚未渲染,等待其出现(此前分析链路慢,
+                # 无意中起到了等待作用;提速后必须显式等待)
+                if not dumped_debug:
+                    try:
+                        from PIL import Image
+                        dbg = os.path.join(
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "debug", "fishing_minigame_debug.png")
+                        Image.fromarray(np.asarray(screenshot)[..., :3][..., ::-1]).save(dbg)
+                        print(f"    🐞 已保存小游戏调试帧: {dbg}")
+                    except Exception as e:
+                        print("    🐞 调试帧保存失败:", e)
+                    dumped_debug = True
+                if current_time - start_time < 4.0:
+                    self.delay(0.15)
+                    continue
+                print("  ⚠️ 4秒内未检测到进度条,视为本轮失败")
+                return False
+            seen_valid = True
             
             cursor_x = bar_info["cursor_x"]
             yellow_regions = bar_info["yellow_regions"]
@@ -412,7 +523,7 @@ class FishingBot:
             now = time.time()
             elapsed = now - current_time
 
-            print("分析耗时: {:.3f}s".format(elapsed))
+            print("分析耗时: {:.3f}s (其中截图 {:.3f}s)".format(elapsed, cap_cost))
             
             # 3. 等待到最佳时机（提前补偿输入延迟） 点击后有7帧延迟，点击动作需要约0.055s 
             adjusted_wait = wait_time - elapsed - 0.045 
@@ -421,6 +532,10 @@ class FishingBot:
                 zone_name = "黄色区" if target_zone == "yellow" else "蓝色区"
                 print(f"    ⏱️ 预测 {wait_time:.3f}s 后到达{zone_name} (等待 {adjusted_wait:.3f}s)")
                 self.delay(adjusted_wait)
+            elif adjusted_wait < -0.08:
+                # 分析结束时预测时机已明显过期,此时点击必然脱靶,等游标下一轮
+                print(f"    ⏭️ 时机已错过 {-adjusted_wait:.3f}s,跳过本次点击等下一轮")
+                continue
             else:
                 print(f"    ⚡ 立即点击 (预测时间: {wait_time:.3f}s)")
             
@@ -461,7 +576,8 @@ class FishingBot:
         self.fish_count += 1
         print(f"\n[第 {self.fish_count} 次钓鱼]")
         
-        # 运行 Casting_Rod pipeline，会自动执行抛竿和检测鱼上钩
+        # 运行 Casting_Rod pipeline:base(安卓)资源为直接按压抛竿;
+        # PlayCover 资源层将其覆盖为 Custom(HoldCastGreen),按住蓄力变绿再松手
         casting_result = self.context.run_task("Casting_Rod")
 
         # print("task Casting_Rod result:", casting_result)
@@ -529,10 +645,26 @@ class FishingAction(CustomAction):
         param = json.loads(param_str) if isinstance(param_str, str) else param_str
         
         max_count = int(param.get("max_count", 1))
-        sell_interval = int(param.get("sell_interval", 30))
+        # 鱼包容量 30;留 5 条余量,防止开局未能清包时计数与实际背包脱节导致包满卡死
+        sell_interval = int(param.get("sell_interval", 25))
 
         bot = FishingBot(
             context=context,
             sell_interval=sell_interval
         )
         return bot.run(max_count=max_count)
+
+
+@AgentServer.custom_action("HoldCastGreen")
+class HoldCastGreenAction(CustomAction):
+    """按住抛竿蓄力,蓄力环变绿瞬间松手(Perfect Cast)。
+
+    仅由 PlayCover 资源层覆盖后的 Casting_Rod 节点以 Custom 动作调用;
+    base(安卓)资源不经过此路径,保持原有直接按压行为不变。
+    """
+
+    def run(self, context: Context, argv: CustomAction.RunArg) -> bool:
+        bot = FishingBot(context=context)
+        bot.running = True
+        bot.hold_cast_until_green()
+        return True
