@@ -556,20 +556,66 @@ class FishingBot:
         
         return False
 
+    def wait_sell_entry(self, max_wait: float = 90.0) -> bool:
+        """静置等待「钓鱼模式」衰减、顶栏钱袋图标出现。
+
+        结算后游戏仍处于钓鱼模式,钱袋图标隐藏;只要不触摸钓鱼相关按钮,
+        一段时间后会自动回到空闲态。期间只截图识别,绝不触摸。
+        """
+        print(f"  🧘 静置等待卖鱼入口出现(最多 {max_wait:.0f}s,期间不触摸)...")
+        t0 = time.time()
+        while self.running and not self.context.tasker.stopping:
+            shot = self.get_screenshot()
+            if shot is not None:
+                reco = self.context.run_recognition("SellFish_Start", shot)
+                if reco and getattr(reco, "hit", False):
+                    print(f"    💰 卖鱼入口已出现(等待 {time.time() - t0:.0f}s)")
+                    return True
+            if time.time() - t0 > max_wait:
+                print(f"    ⏳ {max_wait:.0f}s 内未见卖鱼入口,放弃本次卖鱼")
+                return False
+            self.delay(2.0)
+        return False
+
     def sell_all_fish(self):
         print("\n==================================================")
         print("🐟💰 开始卖鱼...")
 
-        # Use pipeline to execute sell sequence
-        detail = self.context.run_task("SellFish_Start")
+        if not self.wait_sell_entry():
+            print("⚠️ 卖鱼失败:入口未出现,不清计数,下一条鱼后重试")
+            print("==================================================\n")
+            self.delay(1.0)
+            return
 
-        if detail and detail.nodes:
+        ok = False
+        for attempt in range(3):
+            detail = self.context.run_task("SellFish_Start")
+            nodes = [getattr(n, "name", "?") for n in (detail.nodes if detail and detail.nodes else [])]
+            # 只有走到 SellFish_End(出售完毕点返回)才算真正卖完;
+            # 入口超时会以 Global_Null 等兜底节点"完成",不能当成功
+            ok = "SellFish_End" in nodes
+            if ok:
+                break
+            print(f"⚠️ 卖鱼第 {attempt + 1} 次尝试未完成(节点轨迹: {nodes}),2s 后重试")
+            try:
+                from PIL import Image
+                shot = self.get_screenshot()
+                if shot is not None:
+                    dbg = os.path.join(
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "debug", "sellfish_fail_debug.png")
+                    Image.fromarray(np.asarray(shot)[..., :3][..., ::-1]).save(dbg)
+                    print(f"    🐞 已保存卖鱼失败现场: {dbg}")
+            except Exception as e:
+                print("    🐞 现场保存失败:", e)
+            self.delay(2.0)
+
+        if ok:
             self.total_sell_count += 1
             self.fish_since_last_sell = 0
             print(f"✅ 卖鱼完成 (第 {self.total_sell_count} 次)")
         else:
-            # 入口未识别到(如卖鱼图标未出现),不清计数,下一条鱼后自动重试
-            print("⚠️ 卖鱼失败:未能进入卖鱼界面,下一条鱼后重试")
+            print("⚠️ 卖鱼失败:未能走完出售流程,不清计数,下一条鱼后重试")
         print("==================================================\n")
         self.delay(1.0)
 
@@ -682,4 +728,9 @@ class HoldCastGreenAction(CustomAction):
             if attempt < 2:
                 print(f"    🔁 按压似乎未被游戏接收,1s 后重试(第 {attempt + 2} 次)")
                 bot.delay(1.0)
+        # 三次按压均无响应:最常见原因是鱼包已满、抛竿被禁用。
+        # 尝试卖鱼自救(sell_all_fish 会先静置等待钱袋出现),随后再抛一次
+        print("    🆘 按压持续无响应,疑似鱼包已满,尝试卖鱼自救...")
+        bot.sell_all_fish()
+        bot.hold_cast_until_green()
         return True
