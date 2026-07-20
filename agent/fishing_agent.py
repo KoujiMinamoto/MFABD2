@@ -366,6 +366,11 @@ class FishingBot:
             while self.running and not self.context.tasker.stopping:
                 shot = self.get_screenshot()
                 if shot is None:
+                    # 截图失败也必须走超时出口,否则触摸悬挂、循环无法退出
+                    if time.time() - t0 > max_hold:
+                        print(f"    ⏳ 蓄力 {max_hold}s 内截图持续失败,直接松手")
+                        break
+                    self.delay(0.1)
                     continue
                 img = np.asarray(shot)
                 patch = img[y0:y0 + size, x0:x0 + size, :3]
@@ -404,6 +409,10 @@ class FishingBot:
         while self.running and not self.context.tasker.stopping:
             screenshot = self.get_screenshot()
             if screenshot is None:
+                # 截图失败同样走超时出口,避免死循环
+                if time.time() - start_time > 25:
+                    return False, True
+                self.delay(self.timing.wait_fish_interval)
                 continue
             if self.detect_exclamation(screenshot):
                 print("  鱼上钩! 感叹号出现")
