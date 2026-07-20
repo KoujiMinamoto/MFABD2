@@ -360,6 +360,7 @@ class FishingBot:
         self.controller.post_touch_down(*self.coords.cast_rod).wait()
         t0 = time.time()
         best_seen = 0
+        self.last_hold_best_green = 0
         released_green = False
         try:
             while self.running and not self.context.tasker.stopping:
@@ -392,6 +393,7 @@ class FishingBot:
                     break
         finally:
             self.controller.post_touch_up().wait()
+        self.last_hold_best_green = best_seen
         if released_green:
             print(f"    🟢 蓄力环变绿(绿像素 {n},耗时 {time.time()-t0:.2f}s),松手抛竿!")
         return released_green
@@ -666,5 +668,14 @@ class HoldCastGreenAction(CustomAction):
     def run(self, context: Context, argv: CustomAction.RunArg) -> bool:
         bot = FishingBot(context=context)
         bot.running = True
-        bot.hold_cast_until_green()
+        # 结算转场未结束时按压可能不被游戏接收(表现为全程 0 绿像素),
+        # 此时线并未抛出,重试按压是安全的;若已蓄力(绿像素>0)则不重试
+        for attempt in range(3):
+            if bot.hold_cast_until_green():
+                return True
+            if bot.last_hold_best_green > 0:
+                return True  # 蓄力发生过,线已抛出(只是未达绿色阈值),不可重按
+            if attempt < 2:
+                print(f"    🔁 按压似乎未被游戏接收,1s 后重试(第 {attempt + 2} 次)")
+                bot.delay(1.0)
         return True
